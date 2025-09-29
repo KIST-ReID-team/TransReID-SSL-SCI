@@ -7,7 +7,8 @@ from utils.meter import AverageMeter
 from utils.metrics import R1_mAP_eval
 from torch.cuda import amp
 import torch.distributed as dist
-from ..model.sci_loss import LossFunction
+from model.sci_loss import LossFunction
+from model.tvloss import TVLoss
 
 def do_train(cfg,
              model,
@@ -24,6 +25,7 @@ def do_train(cfg,
     eval_period = cfg.SOLVER.EVAL_PERIOD
 
     my_loss = LossFunction()
+    tv_loss_fn = TVLoss()
 
     device = "cuda"
     epochs = cfg.SOLVER.MAX_EPOCHS
@@ -40,6 +42,10 @@ def do_train(cfg,
     loss_meter = AverageMeter()
     acc_meter = AverageMeter()
 
+    loss_meter_reid = AverageMeter()
+    loss_meter_sci = AverageMeter()
+    loss_meter_tv = AverageMeter()
+
     evaluator = R1_mAP_eval(num_query, max_rank=50, feat_norm=cfg.TEST.FEAT_NORM)
     scaler = amp.GradScaler()
     # train
@@ -48,7 +54,15 @@ def do_train(cfg,
         loss_meter.reset()
         acc_meter.reset()
         evaluator.reset()
+
+        loss_meter_reid.reset()
+        loss_meter_sci.reset()
+        loss_meter_tv.reset()
+
         model.train()
+
+        alpha = 0.1
+        beta = 0.1
         for n_iter, (img, vid, target_cam, target_view) in enumerate(train_loader):
             optimizer.zero_grad()
             optimizer_center.zero_grad()
@@ -59,8 +73,9 @@ def do_train(cfg,
             with amp.autocast(enabled=True):
                 score, feat, illu, enh_x = model(img, target, cam_label=target_cam, view_label=target_view )
                 reid_loss = loss_fn(score, feat, target, target_cam)
-                sci_loss = my_loss(img, enh_x)
-                tv_loss = ... # todo: TVLoss 추가
+                sci_loss = my_loss(img, illu)
+                # tv_loss = ... # todo: TVLoss 추가
+                tv_loss = tv_loss_fn(enh_x)
 
                 loss = reid_loss + alpha * sci_loss + beta * tv_loss
 
@@ -82,18 +97,23 @@ def do_train(cfg,
             loss_meter.update(loss.item(), img.shape[0])
             acc_meter.update(acc, 1)
 
+            loss_meter_reid.update(reid_loss.item(), img.shape[0])
+            loss_meter_sci.update(sci_loss.item(), img.shape[0])
+            loss_meter_tv.update(tv_loss.item(), img.shape[0])
+
             torch.cuda.synchronize()
             if cfg.MODEL.DIST_TRAIN:
                 if dist.get_rank() == 0:
                     if (n_iter + 1) % log_period == 0:
                         base_lr = scheduler._get_lr(epoch)[0] if cfg.SOLVER.WARMUP_METHOD == 'cosine' else scheduler.get_lr()[0]
-                        logger.info("Epoch[{}] Iter[{}/{}] Loss: {:.3f}, Acc: {:.3f}, Base Lr: {:.2e}"
-                                    .format(epoch, (n_iter + 1), len(train_loader), loss_meter.avg, acc_meter.avg, base_lr))
+                        logger.info("Epoch[{}] Iter[{}/{}] Loss: {:.3f}, ReID Loss: {:.3f}, SCI Loss: {:.3f}, TV Loss: {:.3f}, Acc: {:.3f}, Base Lr: {:.2e}"
+                                .format(epoch, (n_iter + 1), len(train_loader), loss_meter.avg, loss_meter_reid.avg, loss_meter_sci.avg, loss_meter_tv.avg, acc_meter.avg, base_lr))
+
             else:
                 if (n_iter + 1) % log_period == 0:
                     base_lr = scheduler._get_lr(epoch)[0] if cfg.SOLVER.WARMUP_METHOD == 'cosine' else scheduler.get_lr()[0]
-                    logger.info("Epoch[{}] Iter[{}/{}] Loss: {:.3f}, Acc: {:.3f}, Base Lr: {:.2e}"
-                                .format(epoch, (n_iter + 1), len(train_loader), loss_meter.avg, acc_meter.avg, base_lr))
+                    logger.info("Epoch[{}] Iter[{}/{}] Loss: {:.3f}, ReID Loss: {:.3f}, SCI Loss: {:.3f}, TV Loss: {:.3f}, Acc: {:.3f}, Base Lr: {:.2e}"
+                                .format(epoch, (n_iter + 1), len(train_loader), loss_meter.avg, loss_meter_reid.avg, loss_meter_sci.avg, loss_meter_tv.avg, acc_meter.avg, base_lr))
 
         end_time = time.time()
         time_per_batch = (end_time - start_time) / (n_iter + 1)

@@ -10,10 +10,12 @@ from .msmt17 import MSMT17
 from .sampler_ddp import RandomIdentitySampler_DDP
 import torch.distributed as dist
 from .mm import MM
+from .nightreid import NightReID
 __factory = {
     'market1501': Market1501,
     'msmt17': MSMT17,
     'mm': MM,
+    'nightreid': NightReID
 }
 
 def train_collate_fn(batch):
@@ -39,14 +41,14 @@ def make_dataloader(cfg):
             T.Pad(cfg.INPUT.PADDING),
             T.RandomCrop(cfg.INPUT.SIZE_TRAIN),
             T.ToTensor(),
-            T.Normalize(mean=cfg.INPUT.PIXEL_MEAN, std=cfg.INPUT.PIXEL_STD),
+            # T.Normalize(mean=cfg.INPUT.PIXEL_MEAN, std=cfg.INPUT.PIXEL_STD),
             RandomErasing(probability=cfg.INPUT.RE_PROB, mode='pixel', max_count=1, device='cpu'),
         ])
 
     val_transforms = T.Compose([
         T.Resize(cfg.INPUT.SIZE_TEST),
         T.ToTensor(),
-        T.Normalize(mean=cfg.INPUT.PIXEL_MEAN, std=cfg.INPUT.PIXEL_STD)
+        # T.Normalize(mean=cfg.INPUT.PIXEL_MEAN, std=cfg.INPUT.PIXEL_STD)
     ])
 
     num_workers = cfg.DATALOADER.NUM_WORKERS
